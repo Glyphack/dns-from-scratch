@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 )
@@ -37,11 +38,17 @@ func main() {
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
 		// Create an empty response
-		response := []byte{}
+		response := make([]byte, 12)
+
+		binary.BigEndian.PutUint16(response[0:2], 1234)
+
+		response[2] |= 0b10000000
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
+
+		fmt.Printf("response: %v\n", response)
 	}
 }
