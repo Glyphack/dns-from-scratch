@@ -55,18 +55,15 @@ func main() {
 		// question count
 		header[4] = 0b00000000
 		header[5] = 0b00000001
+		// answer count
+		header[6] = 0b00000000
+		header[7] = 0b00000001
 		response = append(response, header...)
 
 		// Question
 		question := []byte{}
 		domain := "codecrafters.io"
-		labels := bytes.Split([]byte(domain), []byte("."))
-		fmt.Printf("labels: %v\n", labels)
-
-		for label := range labels {
-			question = append(question, byte(len(labels[label])))
-			question = append(question, labels[label]...)
-		}
+		question = append(question, encodeDomain(domain)...)
 		question = append(question, 0)
 
 		// question - type
@@ -77,6 +74,27 @@ func main() {
 		fmt.Printf("question: %v\n", question)
 		response = append(response, question...)
 
+		// answer
+		answer := []byte{}
+		answer = append(answer, encodeDomain(domain)...)
+		answer = append(answer, 0)
+
+		// 1 for A record and 5 for CNAME
+		answer = binary.BigEndian.AppendUint16(answer, 1)
+
+		// class
+		answer = binary.BigEndian.AppendUint16(answer, 1)
+
+		// ttl
+		answer = binary.BigEndian.AppendUint32(answer, 60)
+
+		// length
+		answer = binary.BigEndian.AppendUint16(answer, 4)
+
+		answer = append(answer, []byte("127.0.0.1")...)
+
+		response = append(response, answer...)
+
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
@@ -84,4 +102,15 @@ func main() {
 
 		fmt.Printf("response: %v\n", response)
 	}
+}
+
+func encodeDomain(domain string) []byte {
+	labels := bytes.Split([]byte(domain), []byte("."))
+
+	encodedValue := []byte{}
+	for label := range labels {
+		encodedValue = append(encodedValue, byte(len(labels[label])))
+		encodedValue = append(encodedValue, labels[label]...)
+	}
+	return encodedValue
 }
