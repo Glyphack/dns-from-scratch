@@ -38,19 +38,53 @@ func main() {
 		receivedData := string(buf[:size])
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
+		printResponse(buf, size)
+		id := binary.BigEndian.Uint16(buf[0:2])
+
+		qr := buf[2] & 128
+		fmt.Println("QR", qr)
+		// bits 1 to 4 are opcode
+		opcode := buf[2] & 0b01111000
+		opcode = opcode >> 3
+		fmt.Println("opcode", opcode)
+
+		aa := buf[2] & 0b00000100
+		fmt.Println("AA", aa)
+
+		tc := buf[2] & 0b00000010
+		fmt.Println("TC", tc)
+
+		// last bit is rd
+		rd := buf[2] & 1
+		fmt.Println("RD", rd)
+
+		ra := buf[3] & 128
+		fmt.Println("RA", ra)
+
+		z := buf[3] & 0b01110000
+		fmt.Println("Z", z)
+
 		// Create an empty response
 		response := []byte{}
 
 		// Header
 		header := make([]byte, 12)
 		// id
-		binary.BigEndian.PutUint16(header[0:2], 1234)
+		binary.BigEndian.PutUint16(header[0:2], id)
 
 		// qr opcode aa tc rd
-		header[2] |= 0b10000000
+		header[2] = 0b10000000
+		mask := opcode << 3
+		header[2] |= mask
+		header[2] |= rd
 
+		var rcode byte = 0x0
+		if opcode != 0 {
+			// Not implemented
+			rcode = 0x4
+		}
 		// ra z rcode
-		header[3] = 0b00000000
+		header[3] = rcode
 
 		// question count
 		header[4] = 0b00000000
@@ -71,7 +105,6 @@ func main() {
 		// question - class
 		question = binary.BigEndian.AppendUint16(question, 1)
 
-		fmt.Printf("question: %v\n", question)
 		response = append(response, question...)
 
 		// answer
@@ -99,8 +132,6 @@ func main() {
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
-
-		fmt.Printf("response: %v\n", response)
 	}
 }
 
@@ -113,4 +144,21 @@ func encodeDomain(domain string) []byte {
 		encodedValue = append(encodedValue, labels[label]...)
 	}
 	return encodedValue
+}
+
+func extractBits(b byte, start, end int) byte {
+	mask := byte(((1 << (end - start + 1)) - 1) << start)
+	return (b & mask) >> start
+}
+
+func printResponse(buf []byte, size int) {
+	for i := 0; i < size; i++ {
+		b := buf[i]
+		fmt.Printf("byte #%v: ", i)
+		for j := 7; j >= 0; j-- {
+			bit := (b >> j) & 1
+			fmt.Print(bit)
+		}
+		fmt.Println()
+	}
 }
