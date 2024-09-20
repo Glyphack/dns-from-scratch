@@ -42,6 +42,7 @@ func main() {
 		id := binary.BigEndian.Uint16(buf[0:2])
 
 		qr := buf[2] & 128
+		qr = qr & 7
 		fmt.Println("QR", qr)
 		// bits 1 to 4 are opcode
 		opcode := buf[2] & 0b01111000
@@ -49,9 +50,11 @@ func main() {
 		fmt.Println("opcode", opcode)
 
 		aa := buf[2] & 0b00000100
+		aa = aa >> 2
 		fmt.Println("AA", aa)
 
 		tc := buf[2] & 0b00000010
+		tc = tc >> 1
 		fmt.Println("TC", tc)
 
 		// last bit is rd
@@ -59,10 +62,26 @@ func main() {
 		fmt.Println("RD", rd)
 
 		ra := buf[3] & 128
+		ra = ra >> 7
 		fmt.Println("RA", ra)
 
 		z := buf[3] & 0b01110000
+		z = z >> 4
 		fmt.Println("Z", z)
+
+		responseRCode := buf[3] & 0b00001111
+		fmt.Println("rcode", responseRCode)
+
+		responseQCount := buf[4:6]
+		fmt.Println("qcoutn", responseQCount)
+		responseAnCount := buf[6:8]
+		fmt.Println("anCount", responseAnCount)
+
+		nsCount := buf[8:10]
+		fmt.Println("nsCount", nsCount)
+
+		addRecordCount := buf[10:12]
+		fmt.Println("additional record count", addRecordCount)
 
 		// Create an empty response
 		response := []byte{}
