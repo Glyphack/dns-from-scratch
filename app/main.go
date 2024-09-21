@@ -88,23 +88,23 @@ func main() {
 		qCount := binary.BigEndian.Uint16(reqQCount)
 		domains := []string{}
 		for i := 0; i < int(qCount); i++ {
-			// // check for compression
-			// pointerFlag := (reqQuestion[0] & 0b11000000) >> 6
-			// if pointerFlag == 0b11 {
-			// 	fmt.Println("found pointer")
-			// 	printResponse([]byte{pointerFlag}, 1)
-			// 	pointerAddr := reqQuestion[0] & 0b00111111
-			// 	d, _ := decodeDomain(buf[pointerAddr:])
-			// 	domains = append(domains, d)
-			// 	// only 2 bytes
-			// 	reqQuestion = reqQuestion[1:]
-			// 	continue
-			// }
+			pointerFlag := (reqQuestion[0] & 0b11000000) >> 6
+			if pointerFlag == 0b11 {
+				fmt.Println("found pointer")
+				pointerAddr := reqQuestion[1]
+				fmt.Println("pointer addr", pointerAddr)
+				domain, _ := decodeDomain(reqQuestion, buf)
+				reqQuestion = reqQuestion[2:]
+				domains = append(domains, domain)
+				continue
+			}
 
-			d, read := decodeDomain(reqQuestion)
-			fmt.Println(d)
+			d, read := decodeDomain(reqQuestion, buf)
+			fmt.Println("domain is", d)
 
-			reqQuestion = reqQuestion[read:]
+			// qType := reqQuestion[:2]
+			// qClass := reqQuestion[:2]
+			reqQuestion = reqQuestion[read+4:]
 			domains = append(domains, d)
 		}
 
@@ -194,17 +194,37 @@ func encodeDomain(domain string) []byte {
 	return encodedValue
 }
 
-func decodeDomain(buf []byte) (string, int) {
+func decodeDomain(buf []byte, request []byte) (string, int) {
 	labels := []string{}
 	i := 0
+	printResponse(buf, 30)
 	for {
 		fmt.Println(labels)
-		label := decodeLabel(buf[i:])
+		pointerFlag := (buf[i] & 0b11000000) >> 6
+		if pointerFlag == 0b11 {
+			fmt.Println("found pointer")
+			i++
+			pointerAddr := buf[i]
+			i++
+			fmt.Println("pointer addr", pointerAddr)
+			for request[pointerAddr] != 0 {
+				pointerLength := int(request[pointerAddr])
+				label := decodeLabel(request[pointerAddr+1:], pointerLength)
+				pointerAddr += byte(pointerLength) + 1
+				labels = append(labels, label)
+			}
+			break
+		}
+		length := int(buf[i])
+		// exclude the length bit when parsing
+		label := decodeLabel(buf[i+1:], length)
 		labels = append(labels, label)
 		// length of characters plus first length byte
-		i = i + len(label) + 1
+		i = i + length + 1
 		b := buf[i]
 		if b == 0 {
+			// consume the 0 byte
+			i++
 			break
 		}
 	}
@@ -212,11 +232,10 @@ func decodeDomain(buf []byte) (string, int) {
 	return strings.Join(labels, "."), i
 }
 
-func decodeLabel(buf []byte) string {
+func decodeLabel(buf []byte, length int) string {
 	label := ""
-	length := int(buf[0])
-	i := 1
-	for i <= length {
+	i := 0
+	for i < length {
 		b := buf[i]
 		label += string(b)
 		i++
