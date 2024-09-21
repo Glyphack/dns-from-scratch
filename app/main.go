@@ -72,8 +72,8 @@ func main() {
 		responseRCode := buf[3] & 0b00001111
 		fmt.Println("rcode", responseRCode)
 
-		responseQCount := buf[4:6]
-		fmt.Println("qcoutn", responseQCount)
+		reqQCount := buf[4:6]
+		fmt.Println("qcoutn", reqQCount)
 		responseAnCount := buf[6:8]
 		fmt.Println("anCount", responseAnCount)
 
@@ -82,6 +82,16 @@ func main() {
 
 		addRecordCount := buf[10:12]
 		fmt.Println("additional record count", addRecordCount)
+
+		// parse question
+		reqQuestion := buf[12:]
+		qCount := binary.BigEndian.Uint16(reqQCount)
+		domains := []string{}
+		for i := 0; i < int(qCount); i++ {
+			d, read := decodeDomain(reqQuestion)
+			reqQuestion = reqQuestion[read:]
+			domains = append(domains, d)
+		}
 
 		// Create an empty response
 		response := []byte{}
@@ -106,8 +116,8 @@ func main() {
 		header[3] = rcode
 
 		// question count
-		header[4] = 0b00000000
-		header[5] = 0b00000001
+		header[4] = reqQCount[0]
+		header[5] = reqQCount[1]
 		// answer count
 		header[6] = 0b00000000
 		header[7] = 0b00000001
@@ -115,37 +125,41 @@ func main() {
 
 		// Question
 		question := []byte{}
-		domain := "codecrafters.io"
-		question = append(question, encodeDomain(domain)...)
-		question = append(question, 0)
+		for _, domain := range domains {
+			// domain
+			question = append(question, encodeDomain(domain)...)
+			question = append(question, 0)
+			// type
+			question = binary.BigEndian.AppendUint16(question, 1)
+			// class
+			question = binary.BigEndian.AppendUint16(question, 1)
 
-		// question - type
-		question = binary.BigEndian.AppendUint16(question, 1)
-		// question - class
-		question = binary.BigEndian.AppendUint16(question, 1)
-
-		response = append(response, question...)
+			response = append(response, question...)
+		}
 
 		// answer
 		answer := []byte{}
-		answer = append(answer, encodeDomain(domain)...)
-		answer = append(answer, 0)
 
-		// 1 for A record and 5 for CNAME
-		answer = binary.BigEndian.AppendUint16(answer, 1)
+		for _, domain := range domains {
+			answer = append(answer, encodeDomain(domain)...)
+			answer = append(answer, 0)
 
-		// class
-		answer = binary.BigEndian.AppendUint16(answer, 1)
+			// 1 for A record and 5 for CNAME
+			answer = binary.BigEndian.AppendUint16(answer, 1)
 
-		// ttl
-		answer = binary.BigEndian.AppendUint32(answer, 60)
+			// class
+			answer = binary.BigEndian.AppendUint16(answer, 1)
 
-		// length
-		answer = binary.BigEndian.AppendUint16(answer, 4)
+			// ttl
+			answer = binary.BigEndian.AppendUint32(answer, 60)
 
-		answer = append(answer, []byte("127.0.0.1")...)
+			// length
+			answer = binary.BigEndian.AppendUint16(answer, 4)
 
-		response = append(response, answer...)
+			answer = append(answer, []byte("127.0.0.1")...)
+
+			response = append(response, answer...)
+		}
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
@@ -165,6 +179,30 @@ func encodeDomain(domain string) []byte {
 	return encodedValue
 }
 
+func decodeDomain(buf []byte) (string, int) {
+	domain := ""
+	length := int(buf[0])
+	readCount := 0
+	i := 1
+	for {
+		b := buf[i]
+		i++
+		// If it's terminating 0 then quit
+		if b == 0 {
+			break
+		}
+		// If we read the whole label put `.` and continue
+		if readCount == length {
+			domain += "."
+			length = int(b)
+			readCount = 0
+			continue
+		}
+		readCount++
+		domain += string(b)
+	}
+	return domain, i
+}
 func extractBits(b byte, start, end int) byte {
 	mask := byte(((1 << (end - start + 1)) - 1) << start)
 	return (b & mask) >> start
