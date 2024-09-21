@@ -36,8 +36,7 @@ func main() {
 			break
 		}
 
-		receivedData := string(buf[:size])
-		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
+		fmt.Printf("Received %d bytes from %s\n", size, source)
 
 		id := binary.BigEndian.Uint16(buf[0:2])
 
@@ -73,7 +72,7 @@ func main() {
 		fmt.Println("rcode", responseRCode)
 
 		reqQCount := buf[4:6]
-		fmt.Println("qcoutn", reqQCount)
+		fmt.Println("Qcount", reqQCount)
 		responseAnCount := buf[6:8]
 		fmt.Println("anCount", responseAnCount)
 
@@ -108,6 +107,8 @@ func main() {
 			domains = append(domains, d)
 		}
 
+		fmt.Println("domain count", len(domains))
+
 		// Create an empty response
 		response := []byte{}
 
@@ -133,9 +134,19 @@ func main() {
 		// question count
 		header[4] = reqQCount[0]
 		header[5] = reqQCount[1]
-		// answer count
-		header[6] = 0b00000000
-		header[7] = 0b00000001
+
+		binary.BigEndian.PutUint16(header[6:8], qCount)
+
+		// ns count
+		header[8] = nsCount[0]
+		header[9] = nsCount[1]
+
+		// ar count
+		header[10] = addRecordCount[0]
+		header[11] = addRecordCount[1]
+
+		fmt.Println("header size", len(header))
+
 		response = append(response, header...)
 
 		// Question
@@ -149,8 +160,8 @@ func main() {
 			// class
 			question = binary.BigEndian.AppendUint16(question, 1)
 
-			response = append(response, question...)
 		}
+		response = append(response, question...)
 
 		// answer
 		answer := []byte{}
@@ -171,10 +182,10 @@ func main() {
 			// length
 			answer = binary.BigEndian.AppendUint16(answer, 4)
 
-			answer = append(answer, []byte("127.0.0.1")...)
+			answer = append(answer, []byte{8, 8, 8, 8}...)
 
-			response = append(response, answer...)
 		}
+		response = append(response, answer...)
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
@@ -197,9 +208,7 @@ func encodeDomain(domain string) []byte {
 func decodeDomain(buf []byte, request []byte) (string, int) {
 	labels := []string{}
 	i := 0
-	printResponse(buf, 30)
 	for {
-		fmt.Println(labels)
 		pointerFlag := (buf[i] & 0b11000000) >> 6
 		if pointerFlag == 0b11 {
 			fmt.Println("found pointer")
@@ -228,7 +237,6 @@ func decodeDomain(buf []byte, request []byte) (string, int) {
 			break
 		}
 	}
-	fmt.Println(labels)
 	return strings.Join(labels, "."), i
 }
 
