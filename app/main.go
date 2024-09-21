@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 )
 
 // Ensures gofmt doesn't remove the "net" import in stage 1 (feel free to remove this!)
@@ -38,7 +39,6 @@ func main() {
 		receivedData := string(buf[:size])
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
-		printResponse(buf, size)
 		id := binary.BigEndian.Uint16(buf[0:2])
 
 		qr := buf[2] & 128
@@ -88,7 +88,22 @@ func main() {
 		qCount := binary.BigEndian.Uint16(reqQCount)
 		domains := []string{}
 		for i := 0; i < int(qCount); i++ {
+			// // check for compression
+			// pointerFlag := (reqQuestion[0] & 0b11000000) >> 6
+			// if pointerFlag == 0b11 {
+			// 	fmt.Println("found pointer")
+			// 	printResponse([]byte{pointerFlag}, 1)
+			// 	pointerAddr := reqQuestion[0] & 0b00111111
+			// 	d, _ := decodeDomain(buf[pointerAddr:])
+			// 	domains = append(domains, d)
+			// 	// only 2 bytes
+			// 	reqQuestion = reqQuestion[1:]
+			// 	continue
+			// }
+
 			d, read := decodeDomain(reqQuestion)
+			fmt.Println(d)
+
 			reqQuestion = reqQuestion[read:]
 			domains = append(domains, d)
 		}
@@ -180,32 +195,33 @@ func encodeDomain(domain string) []byte {
 }
 
 func decodeDomain(buf []byte) (string, int) {
-	domain := ""
-	length := int(buf[0])
-	readCount := 0
-	i := 1
+	labels := []string{}
+	i := 0
 	for {
+		fmt.Println(labels)
+		label := decodeLabel(buf[i:])
+		labels = append(labels, label)
+		// length of characters plus first length byte
+		i = i + len(label) + 1
 		b := buf[i]
-		i++
-		// If it's terminating 0 then quit
 		if b == 0 {
 			break
 		}
-		// If we read the whole label put `.` and continue
-		if readCount == length {
-			domain += "."
-			length = int(b)
-			readCount = 0
-			continue
-		}
-		readCount++
-		domain += string(b)
 	}
-	return domain, i
+	fmt.Println(labels)
+	return strings.Join(labels, "."), i
 }
-func extractBits(b byte, start, end int) byte {
-	mask := byte(((1 << (end - start + 1)) - 1) << start)
-	return (b & mask) >> start
+
+func decodeLabel(buf []byte) string {
+	label := ""
+	length := int(buf[0])
+	i := 1
+	for i <= length {
+		b := buf[i]
+		label += string(b)
+		i++
+	}
+	return label
 }
 
 func printResponse(buf []byte, size int) {
