@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 )
@@ -13,6 +15,9 @@ var _ = net.ListenUDP
 
 func main() {
 	fmt.Println("Logs from your program will appear here!")
+	resolverAddr := flag.String("resolver", "", "resolver address")
+
+	flag.Parse()
 
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
@@ -37,6 +42,33 @@ func main() {
 		}
 
 		fmt.Printf("Received %d bytes from %s\n", size, source)
+
+		if *resolverAddr != "" {
+			fmt.Println("resolving using the address")
+			forwarder, err := net.Dial("udp", *resolverAddr)
+			if err != nil {
+				log.Fatal("cannot connect to resolver at:", *resolverAddr, err)
+			}
+			defer forwarder.Close()
+
+			_, err = forwarder.Write(buf)
+			if err != nil {
+				fmt.Println("Failed to send to resolver:", err)
+			}
+
+			// Read the response
+			response := make([]byte, 512)
+			n, err := forwarder.Read(response)
+			if err != nil {
+				log.Fatalf("failed to read response from forwarder: %v", err)
+			}
+
+			_, err = udpConn.WriteToUDP(response[:n], source)
+			if err != nil {
+				fmt.Println("Failed to send response:", err)
+			}
+			continue
+		}
 
 		id := binary.BigEndian.Uint16(buf[0:2])
 
