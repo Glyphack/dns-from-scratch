@@ -13,6 +13,233 @@ import (
 // Ensures gofmt doesn't remove the "net" import in stage 1 (feel free to remove this!)
 var _ = net.ListenUDP
 
+type DnsMessage struct {
+	Header    Header
+	Questions []Question
+	Answers   []Answer
+}
+
+type Answer struct {
+	Name   []string
+	Type   uint16
+	Class  uint16
+	TTL    uint32
+	Length uint16
+	RData  []byte
+}
+
+type Question struct {
+	// domain name as labels
+	Name  []string
+	Type  uint16
+	Class uint16
+}
+
+type Header struct {
+	Id                  uint16
+	QueryResponse       bool
+	Opcode              byte
+	AuthoritativeAnswer bool
+	TruncatedMessage    bool
+	RecursionDesired    bool
+	RecursionAvailable  bool
+	Reserved            byte
+	ResponseCode        byte
+	QuestionCount       uint16
+	AnswerCount         uint16
+	AuthorityCount      uint16
+	AdditionalCount     uint16
+}
+
+func ParseDnsMessage(buf []byte, size int) DnsMessage {
+	id := binary.BigEndian.Uint16(buf[0:2])
+
+	qrT := buf[2] & 0b10000000
+	qr := qrT == 0b10000000
+
+	opcode := buf[2] & 0b01111000
+	opcode = opcode >> 3
+
+	aaT := buf[2] & 0b00000100
+	aa := aaT == 0b00000100
+
+	tcT := buf[2] & 0b00000010
+	tc := tcT == 0b00000010
+
+	// last bit is rd
+	rdT := buf[2] & 1
+	rd := rdT == 1
+
+	raT := buf[3] & 128
+	ra := raT == 1
+
+	z := buf[3] & 0b01110000
+	z = z >> 4
+
+	// rcode is set by server so ignore
+	_ = buf[3] & 0b00001111
+
+	reqQCount := binary.BigEndian.Uint16(buf[4:6])
+	answerCount := binary.BigEndian.Uint16(buf[6:8])
+	nsCount := binary.BigEndian.Uint16(buf[8:10])
+	additionalCount := binary.BigEndian.Uint16(buf[10:12])
+
+	reqQuestion := buf[12:]
+	qCount := reqQCount
+	questions := make([]Question, qCount, qCount)
+	for i := 0; i < int(qCount); i++ {
+		var domain []string
+		pointerFlag := (reqQuestion[0] & 0b11000000) >> 6
+		if pointerFlag == 0b11 {
+			pointerAddr := reqQuestion[1]
+			domain, _ = decodeDomain(buf[pointerAddr:], buf)
+			reqQuestion = reqQuestion[2:]
+		} else {
+			var readLen int
+			domain, readLen = decodeDomain(reqQuestion, buf)
+			reqQuestion = reqQuestion[readLen:]
+		}
+		_ = binary.BigEndian.Uint16(reqQuestion[:2])
+		reqQuestion = reqQuestion[2:]
+		_ = binary.BigEndian.Uint16(reqQuestion[:2])
+		reqQuestion = reqQuestion[2:]
+
+		questions[i] = Question{
+			Name:  domain,
+			Type:  1,
+			Class: 1,
+		}
+	}
+
+	answers := make([]Answer, int(answerCount))
+	for i := 0; i < int(answerCount); i++ {
+		var domain []string
+		pointerFlag := (reqQuestion[0] & 0b11000000) >> 6
+		if pointerFlag == 0b11 {
+			pointerAddr := reqQuestion[1]
+			domain, _ = decodeDomain(buf[pointerAddr:], buf)
+			reqQuestion = reqQuestion[2:]
+		} else {
+			var readLen int
+			domain, readLen = decodeDomain(reqQuestion, buf)
+			reqQuestion = reqQuestion[readLen:]
+		}
+
+		qType := binary.BigEndian.Uint16(reqQuestion[:2])
+		reqQuestion = reqQuestion[2:]
+		qClass := binary.BigEndian.Uint16(reqQuestion[:2])
+		reqQuestion = reqQuestion[2:]
+		ttl := binary.BigEndian.Uint32(reqQuestion[:4])
+		reqQuestion = reqQuestion[4:]
+		length := binary.BigEndian.Uint16(reqQuestion[:2])
+		reqQuestion = reqQuestion[2:]
+		rData := reqQuestion[:4]
+
+		answers[i] = Answer{
+			Name:   domain,
+			Type:   qType,
+			Class:  qClass,
+			TTL:    ttl,
+			Length: length,
+			RData:  rData,
+		}
+	}
+
+	return DnsMessage{
+		Header: Header{
+			Id:                  id,
+			QueryResponse:       qr,
+			Opcode:              opcode,
+			AuthoritativeAnswer: aa,
+			TruncatedMessage:    tc,
+			RecursionDesired:    rd,
+			RecursionAvailable:  ra,
+			Reserved:            0,
+			ResponseCode:        0,
+			QuestionCount:       qCount,
+			AnswerCount:         answerCount,
+			AuthorityCount:      nsCount,
+			AdditionalCount:     additionalCount,
+		},
+		Questions: questions,
+		Answers:   answers,
+	}
+
+}
+
+func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
+	encoded := []byte{}
+
+	// Header
+	header := make([]byte, 12)
+	// id
+	binary.BigEndian.PutUint16(header[0:2], reqDnsMessage.Header.Id)
+
+	// qr set to 1
+	header[2] |= 1 << 7
+	// opcode mimic by req
+	mask := reqDnsMessage.Header.Opcode << 3
+	header[2] |= mask
+	// aa set to 0
+	// we do not own
+	header[2] &^= 1 << 2
+	// tc set to 0
+	header[2] &^= 1 << 1
+	// rd mimic by req
+	header[2] |= boolToUint8(reqDnsMessage.Header.RecursionDesired)
+
+	// ra set to 0
+	header[3] |= boolToUint8(reqDnsMessage.Header.RecursionDesired) << 7
+
+	// z always zero
+	header[3] &= 0b10001111
+
+	// rcode
+	header[3] |= reqDnsMessage.Header.ResponseCode
+
+	// question count
+	binary.BigEndian.PutUint16(header[4:6], uint16(len(reqDnsMessage.Questions)))
+
+	// answer count assume it's same as question count
+	binary.BigEndian.PutUint16(header[6:8], uint16(len(reqDnsMessage.Questions)))
+
+	// just pass the value from request
+	binary.BigEndian.PutUint16(header[8:10], reqDnsMessage.Header.AuthorityCount)
+	binary.BigEndian.PutUint16(header[10:12], 0)
+
+	encoded = append(encoded, header...)
+
+	// Question
+	questionSection := []byte{}
+	for _, question := range reqDnsMessage.Questions {
+		// domain
+		d := strings.Join(question.Name, ".")
+		questionSection = append(questionSection, encodeDomain(d)...)
+		questionSection = append(questionSection, 0)
+		// type
+		questionSection = binary.BigEndian.AppendUint16(questionSection, 1)
+		// class
+		questionSection = binary.BigEndian.AppendUint16(questionSection, 1)
+
+	}
+	encoded = append(encoded, questionSection...)
+
+	// answerSection
+	answerSection := []byte{}
+	for _, answer := range reqDnsMessage.Answers {
+		d := strings.Join(answer.Name, ".")
+		answerSection = append(answerSection, encodeDomain(d)...)
+		answerSection = append(answerSection, 0)
+		answerSection = binary.BigEndian.AppendUint16(answerSection, answer.Type)
+		answerSection = binary.BigEndian.AppendUint16(answerSection, answer.Class)
+		answerSection = binary.BigEndian.AppendUint32(answerSection, answer.TTL)
+		answerSection = binary.BigEndian.AppendUint16(answerSection, answer.Length)
+		answerSection = append(answerSection, answer.RData...)
+	}
+	encoded = append(encoded, answerSection...)
+	return encoded
+}
+
 func main() {
 	fmt.Println("Logs from your program will appear here!")
 	resolverAddr := flag.String("resolver", "", "resolver address")
@@ -43,6 +270,36 @@ func main() {
 
 		fmt.Printf("Received %d bytes from %s\n", size, source)
 
+		incomingDnsMessage := ParseDnsMessage(buf, size)
+
+		fmt.Printf("incoming dns Message: %+v\n", incomingDnsMessage)
+
+		respDnsMessage := incomingDnsMessage
+
+		var rcode byte = 0
+		if incomingDnsMessage.Header.Opcode != 0 {
+			// Not implemented
+			rcode = 0b00000100
+		}
+
+		respDnsMessage.Header.Id = incomingDnsMessage.Header.Id
+		respDnsMessage.Header.QueryResponse = true
+		respDnsMessage.Header.AuthoritativeAnswer = false
+		respDnsMessage.Header.TruncatedMessage = false
+		respDnsMessage.Header.ResponseCode = rcode
+
+		for _, domain := range incomingDnsMessage.Questions {
+			answer := Answer{}
+			answer.Name = domain.Name
+			answer.Class = 1
+			answer.Type = 1
+			answer.TTL = 60
+			answer.Length = 4
+			answer.RData = []byte{8, 8, 8, 8}
+			respDnsMessage.Answers = append(respDnsMessage.Answers, answer)
+			respDnsMessage.Header.AnswerCount++
+		}
+
 		if *resolverAddr != "" {
 			fmt.Println("resolving using the address")
 			forwarder, err := net.Dial("udp", *resolverAddr)
@@ -56,170 +313,24 @@ func main() {
 				fmt.Println("Failed to send to resolver:", err)
 			}
 
-			// Read the response
-			response := make([]byte, 512)
-			n, err := forwarder.Read(response)
+			ResolverResp := make([]byte, 1024)
+			n, err := forwarder.Read(ResolverResp)
 			if err != nil {
 				log.Fatalf("failed to read response from forwarder: %v", err)
 			}
 
-			_, err = udpConn.WriteToUDP(response[:n], source)
-			if err != nil {
-				fmt.Println("Failed to send response:", err)
+			resolverResponseDnsMsg := ParseDnsMessage(ResolverResp, n)
+			fmt.Printf("Resolver response: %+v\n", resolverResponseDnsMsg)
+
+			if len(respDnsMessage.Answers) != 2 {
+				respDnsMessage.Answers = resolverResponseDnsMsg.Answers
 			}
-			continue
 		}
 
-		id := binary.BigEndian.Uint16(buf[0:2])
+		fmt.Printf("Own response: %+v\n", respDnsMessage)
+		ownResp := respDnsMessage.EncodeDnsMessage()
 
-		qr := buf[2] & 128
-		qr = qr & 7
-		fmt.Println("QR", qr)
-		// bits 1 to 4 are opcode
-		opcode := buf[2] & 0b01111000
-		opcode = opcode >> 3
-		fmt.Println("opcode", opcode)
-
-		aa := buf[2] & 0b00000100
-		aa = aa >> 2
-		fmt.Println("AA", aa)
-
-		tc := buf[2] & 0b00000010
-		tc = tc >> 1
-		fmt.Println("TC", tc)
-
-		// last bit is rd
-		rd := buf[2] & 1
-		fmt.Println("RD", rd)
-
-		ra := buf[3] & 128
-		ra = ra >> 7
-		fmt.Println("RA", ra)
-
-		z := buf[3] & 0b01110000
-		z = z >> 4
-		fmt.Println("Z", z)
-
-		responseRCode := buf[3] & 0b00001111
-		fmt.Println("rcode", responseRCode)
-
-		reqQCount := buf[4:6]
-		fmt.Println("Qcount", reqQCount)
-		responseAnCount := buf[6:8]
-		fmt.Println("anCount", responseAnCount)
-
-		nsCount := buf[8:10]
-		fmt.Println("nsCount", nsCount)
-
-		addRecordCount := buf[10:12]
-		fmt.Println("additional record count", addRecordCount)
-
-		// parse question
-		reqQuestion := buf[12:]
-		qCount := binary.BigEndian.Uint16(reqQCount)
-		domains := []string{}
-		for i := 0; i < int(qCount); i++ {
-			pointerFlag := (reqQuestion[0] & 0b11000000) >> 6
-			if pointerFlag == 0b11 {
-				fmt.Println("found pointer")
-				pointerAddr := reqQuestion[1]
-				fmt.Println("pointer addr", pointerAddr)
-				domain, _ := decodeDomain(reqQuestion, buf)
-				reqQuestion = reqQuestion[2:]
-				domains = append(domains, domain)
-				continue
-			}
-
-			d, read := decodeDomain(reqQuestion, buf)
-			fmt.Println("domain is", d)
-
-			// qType := reqQuestion[:2]
-			// qClass := reqQuestion[:2]
-			reqQuestion = reqQuestion[read+4:]
-			domains = append(domains, d)
-		}
-
-		fmt.Println("domain count", len(domains))
-
-		// Create an empty response
-		response := []byte{}
-
-		// Header
-		header := make([]byte, 12)
-		// id
-		binary.BigEndian.PutUint16(header[0:2], id)
-
-		// qr opcode aa tc rd
-		header[2] = 0b10000000
-		mask := opcode << 3
-		header[2] |= mask
-		header[2] |= rd
-
-		var rcode byte = 0x0
-		if opcode != 0 {
-			// Not implemented
-			rcode = 0x4
-		}
-		// ra z rcode
-		header[3] = rcode
-
-		// question count
-		header[4] = reqQCount[0]
-		header[5] = reqQCount[1]
-
-		binary.BigEndian.PutUint16(header[6:8], qCount)
-
-		// ns count
-		header[8] = nsCount[0]
-		header[9] = nsCount[1]
-
-		// ar count
-		header[10] = addRecordCount[0]
-		header[11] = addRecordCount[1]
-
-		fmt.Println("header size", len(header))
-
-		response = append(response, header...)
-
-		// Question
-		question := []byte{}
-		for _, domain := range domains {
-			// domain
-			question = append(question, encodeDomain(domain)...)
-			question = append(question, 0)
-			// type
-			question = binary.BigEndian.AppendUint16(question, 1)
-			// class
-			question = binary.BigEndian.AppendUint16(question, 1)
-
-		}
-		response = append(response, question...)
-
-		// answer
-		answer := []byte{}
-
-		for _, domain := range domains {
-			answer = append(answer, encodeDomain(domain)...)
-			answer = append(answer, 0)
-
-			// 1 for A record and 5 for CNAME
-			answer = binary.BigEndian.AppendUint16(answer, 1)
-
-			// class
-			answer = binary.BigEndian.AppendUint16(answer, 1)
-
-			// ttl
-			answer = binary.BigEndian.AppendUint32(answer, 60)
-
-			// length
-			answer = binary.BigEndian.AppendUint16(answer, 4)
-
-			answer = append(answer, []byte{8, 8, 8, 8}...)
-
-		}
-		response = append(response, answer...)
-
-		_, err = udpConn.WriteToUDP(response, source)
+		_, err = udpConn.WriteToUDP(ownResp, source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
@@ -237,17 +348,15 @@ func encodeDomain(domain string) []byte {
 	return encodedValue
 }
 
-func decodeDomain(buf []byte, request []byte) (string, int) {
+func decodeDomain(buf []byte, request []byte) ([]string, int) {
 	labels := []string{}
 	i := 0
 	for {
 		pointerFlag := (buf[i] & 0b11000000) >> 6
 		if pointerFlag == 0b11 {
-			fmt.Println("found pointer")
 			i++
 			pointerAddr := buf[i]
 			i++
-			fmt.Println("pointer addr", pointerAddr)
 			for request[pointerAddr] != 0 {
 				pointerLength := int(request[pointerAddr])
 				label := decodeLabel(request[pointerAddr+1:], pointerLength)
@@ -269,7 +378,7 @@ func decodeDomain(buf []byte, request []byte) (string, int) {
 			break
 		}
 	}
-	return strings.Join(labels, "."), i
+	return labels, i
 }
 
 func decodeLabel(buf []byte, length int) string {
@@ -292,5 +401,12 @@ func printResponse(buf []byte, size int) {
 			fmt.Print(bit)
 		}
 		fmt.Println()
+	}
+}
+func boolToUint8(val bool) uint8 {
+	if val {
+		return 1
+	} else {
+		return 0
 	}
 }
