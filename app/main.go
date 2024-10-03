@@ -240,8 +240,6 @@ func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
 	}
 	rest = append(rest, answerSection...)
 
-	rest = append(rest, []byte{0, 0, 41, 16}...)
-
 	encoded = slices.Insert(encoded, 12, rest...)
 	return encoded
 }
@@ -287,25 +285,31 @@ func main() {
 				log.Fatal("cannot connect to resolver at:", *resolverAddr, err)
 			}
 			defer forwarder.Close()
-
 			if slices.Equal(myInput, buf) {
-				fmt.Printf("Not equal: %#v\n %v\n", incomingDnsMessage, myInput)
+				log.Fatalf("Not equal: %#v\n %v\n", incomingDnsMessage, myInput)
 			}
 
-			_, err = forwarder.Write(myInput)
-			if err != nil {
-				fmt.Println("Failed to send to resolver:", err)
-			}
+			answers := []Answer{}
+			for _, q := range incomingDnsMessage.Questions {
+				resolverReq := incomingDnsMessage
+				resolverReq.Header.QuestionCount = 1
+				resolverReq.Questions = []Question{q}
 
-			ResolverResp := make([]byte, 1024)
-			n, err := forwarder.Read(ResolverResp)
-			if err != nil {
-				log.Fatalf("failed to read response from forwarder: %v", err)
-			}
+				_, err = forwarder.Write(resolverReq.EncodeDnsMessage())
+				if err != nil {
+					fmt.Println("Failed to send to resolver:", err)
+				}
 
-			resolverResponseDnsMsg := ParseDnsMessage(ResolverResp, n)
-			fmt.Printf("Resolver response: %+v\n", resolverResponseDnsMsg)
-			respDnsMessage.Answers = resolverResponseDnsMsg.Answers
+				ResolverResp := make([]byte, 1024)
+				n, err := forwarder.Read(ResolverResp)
+				if err != nil {
+					log.Fatalf("failed to read response from forwarder: %v", err)
+				}
+				resolverResponseDnsMsg := ParseDnsMessage(ResolverResp, n)
+				fmt.Printf("Resolver response: %+v\n", resolverResponseDnsMsg)
+				answers = append(answers, resolverResponseDnsMsg.Answers...)
+			}
+			respDnsMessage.Answers = answers
 		} else {
 			for _, domain := range incomingDnsMessage.Questions {
 				answer := Answer{}
