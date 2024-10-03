@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"slices"
 	"strings"
 )
 
@@ -17,6 +18,7 @@ type DnsMessage struct {
 	Header    Header
 	Questions []Question
 	Answers   []Answer
+	Size      int
 }
 
 type Answer struct {
@@ -43,6 +45,7 @@ type Header struct {
 	TruncatedMessage    bool
 	RecursionDesired    bool
 	RecursionAvailable  bool
+	Z                   byte
 	Reserved            byte
 	ResponseCode        byte
 	QuestionCount       uint16
@@ -86,7 +89,7 @@ func ParseDnsMessage(buf []byte, size int) DnsMessage {
 
 	reqQuestion := buf[12:]
 	qCount := reqQCount
-	questions := make([]Question, qCount, qCount)
+	questions := make([]Question, qCount)
 	for i := 0; i < int(qCount); i++ {
 		var domain []string
 		pointerFlag := (reqQuestion[0] & 0b11000000) >> 6
@@ -154,6 +157,7 @@ func ParseDnsMessage(buf []byte, size int) DnsMessage {
 			TruncatedMessage:    tc,
 			RecursionDesired:    rd,
 			RecursionAvailable:  ra,
+			Z:                   z,
 			Reserved:            0,
 			ResponseCode:        0,
 			QuestionCount:       qCount,
@@ -163,37 +167,34 @@ func ParseDnsMessage(buf []byte, size int) DnsMessage {
 		},
 		Questions: questions,
 		Answers:   answers,
+		Size:      size,
 	}
-
 }
 
 func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
-	encoded := []byte{}
+	encoded := make([]byte, 512)
 
 	// Header
 	header := make([]byte, 12)
 	// id
 	binary.BigEndian.PutUint16(header[0:2], reqDnsMessage.Header.Id)
 
-	// qr set to 1
-	header[2] |= 1 << 7
-	// opcode mimic by req
+	header[2] |= boolToUint8(reqDnsMessage.Header.QueryResponse) << 7
+
+	// opcode
 	mask := reqDnsMessage.Header.Opcode << 3
 	header[2] |= mask
-	// aa set to 0
-	// we do not own
-	header[2] &^= 1 << 2
-	// tc set to 0
-	header[2] &^= 1 << 1
-	// rd mimic by req
+	// aa
+	header[2] &^= boolToUint8(reqDnsMessage.Header.AuthoritativeAnswer) << 2
+	// tc
+	header[2] &^= boolToUint8(reqDnsMessage.Header.TruncatedMessage) << 1
+	// rd
 	header[2] |= boolToUint8(reqDnsMessage.Header.RecursionDesired)
 
-	// ra set to 0
-	header[3] |= boolToUint8(reqDnsMessage.Header.RecursionDesired) << 7
-
-	// z always zero
-	header[3] &= 0b10001111
-
+	// ra
+	header[3] |= boolToUint8(reqDnsMessage.Header.RecursionAvailable) << 7
+	// z
+	header[3] |= reqDnsMessage.Header.Z << 4
 	// rcode
 	header[3] |= reqDnsMessage.Header.ResponseCode
 
@@ -201,14 +202,15 @@ func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
 	binary.BigEndian.PutUint16(header[4:6], uint16(len(reqDnsMessage.Questions)))
 
 	// answer count assume it's same as question count
-	binary.BigEndian.PutUint16(header[6:8], uint16(len(reqDnsMessage.Questions)))
+	binary.BigEndian.PutUint16(header[6:8], uint16(len(reqDnsMessage.Answers)))
 
 	// just pass the value from request
 	binary.BigEndian.PutUint16(header[8:10], reqDnsMessage.Header.AuthorityCount)
-	binary.BigEndian.PutUint16(header[10:12], 0)
+	binary.BigEndian.PutUint16(header[10:12], reqDnsMessage.Header.AdditionalCount)
 
-	encoded = append(encoded, header...)
+	encoded = slices.Insert(encoded, 0, header...)
 
+	rest := []byte{}
 	// Question
 	questionSection := []byte{}
 	for _, question := range reqDnsMessage.Questions {
@@ -222,7 +224,7 @@ func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
 		questionSection = binary.BigEndian.AppendUint16(questionSection, 1)
 
 	}
-	encoded = append(encoded, questionSection...)
+	rest = append(rest, questionSection...)
 
 	// answerSection
 	answerSection := []byte{}
@@ -236,7 +238,11 @@ func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
 		answerSection = binary.BigEndian.AppendUint16(answerSection, answer.Length)
 		answerSection = append(answerSection, answer.RData...)
 	}
-	encoded = append(encoded, answerSection...)
+	rest = append(rest, answerSection...)
+
+	rest = append(rest, []byte{0, 0, 41, 16}...)
+
+	encoded = slices.Insert(encoded, 12, rest...)
 	return encoded
 }
 
@@ -271,44 +277,22 @@ func main() {
 		fmt.Printf("Received %d bytes from %s\n", size, source)
 
 		incomingDnsMessage := ParseDnsMessage(buf, size)
-
-		fmt.Printf("incoming dns Message: %+v\n", incomingDnsMessage)
+		myInput := incomingDnsMessage.EncodeDnsMessage()
 
 		respDnsMessage := incomingDnsMessage
-
-		var rcode byte = 0
-		if incomingDnsMessage.Header.Opcode != 0 {
-			// Not implemented
-			rcode = 0b00000100
-		}
-
-		respDnsMessage.Header.Id = incomingDnsMessage.Header.Id
-		respDnsMessage.Header.QueryResponse = true
-		respDnsMessage.Header.AuthoritativeAnswer = false
-		respDnsMessage.Header.TruncatedMessage = false
-		respDnsMessage.Header.ResponseCode = rcode
-
-		for _, domain := range incomingDnsMessage.Questions {
-			answer := Answer{}
-			answer.Name = domain.Name
-			answer.Class = 1
-			answer.Type = 1
-			answer.TTL = 60
-			answer.Length = 4
-			answer.RData = []byte{8, 8, 8, 8}
-			respDnsMessage.Answers = append(respDnsMessage.Answers, answer)
-			respDnsMessage.Header.AnswerCount++
-		}
-
 		if *resolverAddr != "" {
-			fmt.Println("resolving using the address")
+			fmt.Println("resolving using the address", *resolverAddr)
 			forwarder, err := net.Dial("udp", *resolverAddr)
 			if err != nil {
 				log.Fatal("cannot connect to resolver at:", *resolverAddr, err)
 			}
 			defer forwarder.Close()
 
-			_, err = forwarder.Write(buf)
+			if slices.Equal(myInput, buf) {
+				fmt.Printf("Not equal: %#v\n %v\n", incomingDnsMessage, myInput)
+			}
+
+			_, err = forwarder.Write(myInput)
 			if err != nil {
 				fmt.Println("Failed to send to resolver:", err)
 			}
@@ -321,10 +305,34 @@ func main() {
 
 			resolverResponseDnsMsg := ParseDnsMessage(ResolverResp, n)
 			fmt.Printf("Resolver response: %+v\n", resolverResponseDnsMsg)
-
-			if len(respDnsMessage.Answers) != 2 {
-				respDnsMessage.Answers = resolverResponseDnsMsg.Answers
+			respDnsMessage.Answers = resolverResponseDnsMsg.Answers
+		} else {
+			for _, domain := range incomingDnsMessage.Questions {
+				answer := Answer{}
+				answer.Name = domain.Name
+				answer.Class = 1
+				answer.Type = 1
+				answer.TTL = 60
+				answer.Length = 4
+				answer.RData = []byte{8, 8, 8, 8}
+				respDnsMessage.Answers = append(respDnsMessage.Answers, answer)
 			}
+		}
+
+		respDnsMessage.Header.AnswerCount = uint16(len(respDnsMessage.Answers))
+		var rcode byte = 0
+		if incomingDnsMessage.Header.Opcode != 0 {
+			// Not implemented
+			rcode = 0b00000100
+		}
+
+		respDnsMessage.Header.Id = incomingDnsMessage.Header.Id
+		respDnsMessage.Header.QueryResponse = true
+		respDnsMessage.Header.AuthoritativeAnswer = false
+		respDnsMessage.Header.TruncatedMessage = false
+		respDnsMessage.Header.ResponseCode = rcode
+		if incomingDnsMessage.Header.RecursionDesired {
+			respDnsMessage.Header.RecursionAvailable = true
 		}
 
 		fmt.Printf("Own response: %+v\n", respDnsMessage)
