@@ -283,7 +283,6 @@ func main() {
 		fmt.Printf("Received %d bytes from %s\n", size, source)
 
 		incomingDnsMessage := ParseDnsMessage(buf, size)
-		myInput := incomingDnsMessage.EncodeDnsMessage()
 
 		respDnsMessage := incomingDnsMessage
 		// Resolver is used to resolve messages one by one
