@@ -208,7 +208,11 @@ func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
 	binary.BigEndian.PutUint16(header[8:10], reqDnsMessage.Header.AuthorityCount)
 	binary.BigEndian.PutUint16(header[10:12], reqDnsMessage.Header.AdditionalCount)
 
-	encoded = slices.Insert(encoded, 0, header...)
+	i := 0
+	for i < len(header) {
+		encoded[i] = header[i]
+		i++
+	}
 
 	rest := []byte{}
 	// Question
@@ -240,7 +244,12 @@ func (reqDnsMessage DnsMessage) EncodeDnsMessage() []byte {
 	}
 	rest = append(rest, answerSection...)
 
-	encoded = slices.Insert(encoded, 12, rest...)
+	i = 0
+	for i < len(rest) {
+		encoded[i+12] = rest[i]
+		i++
+	}
+
 	return encoded
 }
 
@@ -278,6 +287,7 @@ func main() {
 		myInput := incomingDnsMessage.EncodeDnsMessage()
 
 		respDnsMessage := incomingDnsMessage
+		// Resolver is used to resolve messages one by one
 		if *resolverAddr != "" {
 			fmt.Println("resolving using the address", *resolverAddr)
 			forwarder, err := net.Dial("udp", *resolverAddr)
@@ -285,7 +295,7 @@ func main() {
 				log.Fatal("cannot connect to resolver at:", *resolverAddr, err)
 			}
 			defer forwarder.Close()
-			if slices.Equal(myInput, buf) {
+			if !slices.Equal(myInput, buf) {
 				log.Fatalf("Not equal: %#v\n %v\n", incomingDnsMessage, myInput)
 			}
 
