@@ -413,17 +413,6 @@ func decodeLabel(buf []byte, length int) string {
 	return label
 }
 
-func printResponse(buf []byte, size int) {
-	for i := 0; i < size; i++ {
-		b := buf[i]
-		fmt.Printf("byte #%v: ", i)
-		for j := 7; j >= 0; j-- {
-			bit := (b >> j) & 1
-			fmt.Print(bit)
-		}
-		fmt.Println()
-	}
-}
 func boolToUint8(val bool) uint8 {
 	if val {
 		return 1
