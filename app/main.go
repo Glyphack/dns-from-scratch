@@ -296,7 +296,7 @@ func main() {
 			}
 			defer forwarder.Close()
 			if !slices.Equal(myInput, buf) {
-				log.Fatalf("Not equal: %#v\n %v\n", incomingDnsMessage, myInput)
+				log.Fatalf("Not equal: %#v\n %v\n", buf, myInput)
 			}
 
 			answers := []Answer{}
