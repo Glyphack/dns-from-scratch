@@ -1,0 +1,1 @@
+- Implement domain compression for encoder
